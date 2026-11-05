@@ -64,26 +64,49 @@
     </section>
     <section id="result" hidden tabindex="-1" aria-label="Message">
       <p id="result-text"></p>
+      <button type="button" id="again">ENTER ANOTHER CODE</button>
     </section>
   </main>
+  <script id="sealed-clues" type="application/json">{"iterations":600000,"salt":"O1adqYheftc0gg2ppCq26g==","entries":[{"iv":"+4TnGY8iseKzp/zO","data":"k/SDCVu4xBckIoI3ftn+4c9RXKVACRti2OVVcu9RYlzcma1PfN9n3jM="},{"iv":"sAsf2a8hOC0xJGS0","data":"SZZQ2yb1nEaTUKnBwxAvwv7zp8eANF/h3IEh"}]}</script>
   <script>
-    // ==========================================================
-    // NUR DIESE ZWEI WERTE ÄNDERN:
-    // Passwort: Groß-/Kleinschreibung wird exakt geprüft.
-    const PASSWORD = "ABADDON";
-    // Text nach dem Passwort. Zwischen den Backticks sind Zeilenumbrüche möglich.
-    const TARGET_TEXT = `X : -46784     Y : +67892`;
-    // ==========================================================
-
     const login = document.getElementById("login");
     const result = document.getElementById("result");
     const password = document.getElementById("password");
     const error = document.getElementById("error");
 
-    function submitPassword(value) {
+    const clues = JSON.parse(document.getElementById("sealed-clues").textContent);
+    const bytes = value => Uint8Array.from(atob(value), ch => ch.charCodeAt(0));
+    let attempt = 0;
+
+    async function unlock(value) {
+      const material = await crypto.subtle.importKey("raw", new TextEncoder().encode(value), "PBKDF2", false, ["deriveKey"]);
+      const key = await crypto.subtle.deriveKey(
+        {name: "PBKDF2", hash: "SHA-256", salt: bytes(clues.salt), iterations: clues.iterations},
+        material, {name: "AES-GCM", length: 256}, false, ["decrypt"]);
+      for (const entry of clues.entries) {
+        try {
+          const plaintext = await crypto.subtle.decrypt({name: "AES-GCM", iv: bytes(entry.iv)}, key, bytes(entry.data));
+          return new TextDecoder().decode(plaintext);
+        } catch (error) {
+          if (error.name !== "OperationError") throw error;
+        }
+      }
+      return null;
+    }
+
+    async function submitPassword(value) {
       if (typeof value !== "string") throw new TypeError("Password must be a string.");
+      const id = ++attempt;
       if (!result.hidden) return { status: "unlocked" };
-      if (value !== PASSWORD) {
+      let message;
+      try {
+        message = await unlock(value);
+      } catch {
+        if (id === attempt) error.textContent = "UNABLE TO OPEN CLUE";
+        return {status: "error"};
+      }
+      if (id !== attempt) return {status: "cancelled"};
+      if (message === null) {
         error.textContent = "ACCESS DENIED";
         password.setAttribute("aria-invalid", "true");
         password.value = "";
@@ -91,7 +114,7 @@
         return { status: "denied" };
       }
       const output = document.getElementById("result-text");
-      const coordinates = TARGET_TEXT.match(/^X\s*:\s*([+-]?\d+)\s+Y\s*:\s*([+-]?\d+)$/);
+      const coordinates = message.match(/^X\s*:\s*([+-]?\d+)\s+Y\s*:\s*([+-]?\d+)$/);
       if (coordinates) {
         output.classList.add("coordinates");
         output.replaceChildren(...["X", "Y"].map((axis, index) => {
@@ -108,7 +131,7 @@
         }));
       } else {
         output.classList.remove("coordinates");
-        output.textContent = TARGET_TEXT;
+        output.textContent = message;
       }
       password.value = "";
       error.textContent = "";
@@ -123,8 +146,16 @@
       submitPassword(password.value);
     });
     password.addEventListener("input", () => {
+      attempt++;
       error.textContent = "";
       password.removeAttribute("aria-invalid");
+    });
+    document.getElementById("again").addEventListener("click", () => {
+      attempt++;
+      result.hidden = true;
+      document.getElementById("result-text").replaceChildren();
+      login.hidden = false;
+      password.focus();
     });
     // Optional browser-agent access uses the exact same password check.
     if (document.modelContext?.registerTool) {
